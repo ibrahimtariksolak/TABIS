@@ -1,44 +1,73 @@
-# Batarya Sağlık ve Telemetri Platformu
+# TABIS — Tactical Battery Intelligence System
 
-**Savunma sanayii ve İKA (İnsansız Kara Aracı) uygulamaları için batarya sağlığı izleme, hücre dengeleme ve öngörücü bakım sistemi**
+**Defense-grade battery telemetry with fault injection, thermal protection, SoH estimation & ML-driven usage analytics for unmanned ground vehicles.**
+
+**Savunma sistemleri ve İKA (İnsansız Kara Aracı) uygulamaları için uçtan uca batarya telemetrisi, arıza enjeksiyonu, SoH kestirimi ve ML destekli kullanım analizi platformu.**
 
 ## Proje Nedir?
 
-Bu proje, bir batarya/İKA sisteminin voltaj, akım, sıcaklık ve şarj durumu (SoC) verilerini fizik tabanlı simüle eden, bu veriyi bir zaman serisi veritabanında saklayan, üzerine klasik makine öğrenmesi ile sürüş/kullanım karakteri analizi ve temel BMS (Battery Management System) mantığı (SoH tahmini, hücre dengeleme, termal koruma) ekleyen, sonucu canlı bir web dashboard'unda gösteren uçtan uca bir sistemdir.
+Bir batarya/İKA sisteminin voltaj, akım, sıcaklık ve şarj durumu (SoC) verilerini fizik tabanlı simüle eden, BMS (Battery Management System) mantığı (SoH tahmini, hücre dengeleme, termal koruma, arıza tespiti) uygulayan, K-Means ile sürüş karakteri analizi yapan ve sonucu canlı bir web dashboard'unda gösteren uçtan uca bir sistemdir.
 
-Gerçek bir batarya donanımına bağlı değildir — amaç, gerçek BMS sistemlerinin temel mantığını yazılım tarafında küçük ölçekte, anlaşılır ve genişletilebilir şekilde yeniden üretmektir.
+**Arıza enjeksiyonu (fault injection)** sayesinde soğutma arızası, hücre kısa devresi, iç direnç artışı, sensör kopması gibi gerçek arıza modları runtime'da tetiklenebilir ve dashboard üzerinden gözlemlenebilir.
 
-## Neden Bu Proje?
-
-- Gerçek EV/İKA sistemlerinde batarya arızaları güvenlik riski ve maliyet kaybı demektir; erken uyarı (termal kaçak, hücre dengesizliği, SoH düşüşü) öngörücü bakımın temelidir.
-- Sürüş/kullanım karakterini sınıflandırmak için büyük dil modellerine ihtiyaç yoktur — klasik ML (K-Means) burada daha hızlı, daha ucuz ve daha yorumlanabilirdir.
-- Proje, tek bir bileşene değil (sadece dashboard, sadece ML, sadece backend) uçtan uca bir sisteme odaklanır: veri üretiminden karar destek arayüzüne kadar tüm hattı kapsar.
+**ROS 2 köprüsü** ile telemetri verisi `sensor_msgs/BatteryState` ve `diagnostic_msgs/DiagnosticArray` olarak ROS 2 ekosistemine aktarılır.
 
 ## Sistem Mimarisi
 
 ```
 Batarya Simülatörü (Python)
         │  (voltaj, akım, sıcaklık, SoC — fizik tabanlı)
+        │  + Arıza Enjeksiyonu (FaultInjector)
         ▼
 Backend API (FastAPI)  ──────────────►  TimescaleDB
-        │  WebSocket (canlı akış)         (zaman serisi veri)
+        │  WebSocket (canlı akış)         (zaman serisi + olay kaydı)
+        │  REST (sim kontrol, ML)
         ▼
 ┌───────────────────────┐
 │  BMS Mantığı            │  SoH tahmini, hücre dengeleme,
 │  (bms_logic.py)         │  termal koruma state machine
 └───────────────────────┘
         │
-        ▼
-K-Means ML Modülü  ──────────────────►  /ml/driving-style
-   (sürüş karakteri sınıflandırma)        endpoint'i
+        ├──► K-Means ML Modülü (sürüş karakteri)
         │
-        ▼
-React Dashboard (Vite + Recharts)
-   canlı KPI kartları, grafikler,
-   sürüş analizi paneli
+        ├──► React Dashboard (Vite + Recharts)
+        │
+        └──► ROS 2 Köprüsü
+              sensor_msgs/BatteryState
+              diagnostic_msgs/DiagnosticArray
 ```
 
-Detaylı mimari notları ve tasarım kararlarının gerekçeleri: [`docs/architecture.md`](docs/architecture.md)
+## Arıza Enjeksiyonu
+
+Simülatör beş arıza modunu destekler:
+
+| Arıza | Seviye | Etki |
+|---|---|---|
+| `cooling_failure` | Paket | Soğutma durur → sıcaklık kaçar |
+| `internal_resistance` | Hücre | İç direnç artar → aşırı ısınma |
+| `self_discharge` | Hücre | Kaçak akım → hücre dengesizliği |
+| `cell_short` | Hücre | Kısa devre → hızlı ısınma + boşalma |
+| `sensor_dropout` | Paket | Sensör kopması → fail-safe SHUTDOWN |
+
+```bash
+# Soğutma arızası enjekte et
+curl -X POST http://localhost:8000/sim/fault \
+  -H 'Content-Type: application/json' \
+  -d '{"fault_type": "cooling_failure", "severity": 0.8}'
+
+# Hücre 0'da iç direnç artışı
+curl -X POST http://localhost:8000/sim/fault \
+  -H 'Content-Type: application/json' \
+  -d '{"fault_type": "internal_resistance", "severity": 0.6, "cell_index": 0}'
+
+# Sürüş profilini agresife çevir
+curl -X POST http://localhost:8000/sim/profile \
+  -H 'Content-Type: application/json' \
+  -d '{"driving_style": "aggressive"}'
+
+# Tüm arızaları temizle
+curl -X DELETE http://localhost:8000/sim/fault
+```
 
 ## Teknoloji Yığını
 
@@ -46,93 +75,143 @@ Detaylı mimari notları ve tasarım kararlarının gerekçeleri: [`docs/archite
 |---|---|---|
 | Simülatör | Python (saf, bağımlılıksız) | Fizik motoru bağımsız test edilebilir olsun diye harici kütüphaneye ihtiyaç duymaz |
 | Backend API | FastAPI + Uvicorn | Async destek, otomatik OpenAPI dokümantasyonu, WebSocket desteği |
-| Gerçek zamanlı iletişim | WebSocket | Polling'e göre daha düşük gecikme, daha az gereksiz istek |
-| Veritabanı | PostgreSQL + TimescaleDB | Zaman serisi verisi için optimize edilmiş hypertable yapısı |
+| Gerçek zamanlı | WebSocket | Polling'e göre daha düşük gecikme |
+| Veritabanı | PostgreSQL + TimescaleDB | Zaman serisi verisi için optimize hypertable yapısı |
 | BMS Mantığı | Python (histerezisli state machine) | Termal salınım (flapping) olmadan güvenilir durum geçişleri |
-| ML | scikit-learn (K-Means + StandardScaler) | Hızlı, yorumlanabilir, düşük kaynak maliyeti; k=3 silhouette skoruyla doğrulanmış (0.93) |
+| ML | scikit-learn (K-Means) | Hızlı, yorumlanabilir, düşük kaynak maliyeti |
 | Frontend | React (Vite) + Recharts | Canlı grafik çizimi, component tabanlı yapı |
-| Altyapı | Docker (TimescaleDB için) | Veritabanının taşınabilir, tek komutla ayağa kalkan bir servis olması |
+| ROS 2 | rclpy (Humble) | BatteryState + DiagnosticArray yayını, Nav2 entegrasyonu |
+| Altyapı | Docker Compose | Tek komutla ayağa kalkan yığın (DB + backend + frontend) |
+| CI | GitHub Actions | Python 3.10/3.11/3.12 üzerinde lint + test |
 
 ## Klasör Yapısı
 
 ```
-├── simulator/            # Bağımsız test edilebilir batarya fizik motoru
-│   ├── battery_simulator.py
-│   ├── bms_logic.py      # SoH tahmini + termal koruma state machine
-│   └── driving_profile.py
-├── backend/
-│   └── app/
-│       ├── main.py       # FastAPI: REST + WebSocket endpoint'leri
-│       ├── live_simulation.py  # Arka planda sürekli çalışan simülasyon görevi
-│       ├── ws_manager.py
-│       └── db/           # Bağlantı, şema, okuma/yazma katmanı
+battery_platform/           # Ana Python paketi
+├── simulator/
+│   ├── pack.py             # BatteryPack + Cell fiziği
+│   ├── bms_logic.py        # ThermalProtection + SoHEstimator
+│   ├── driving_profile.py  # Sürüş profili üreteci
+│   └── faults.py           # Arıza enjeksiyonu
+├── api/
+│   ├── app.py              # FastAPI uygulaması
+│   ├── schemas.py          # Pydantic şemaları
+│   ├── live_simulation.py  # Arka plan simülasyonu
+│   ├── simulation_state.py # Paylaşılan sim durumu
+│   ├── ws_manager.py       # WebSocket yöneticisi
+│   └── routes/             # telemetry, bms, ml, simulation, events
+├── db/
+│   ├── connection.py       # psycopg3 connection pool
+│   ├── reader.py           # Sorgu katmanı
+│   ├── writer.py           # Toplu INSERT
+│   └── sql/                # Şema ve migrasyonlar
 ├── ml/
-│   ├── features.py       # Ortak özellik çıkarımı (eğitim ve tahmin aynı tanımı paylaşır)
-│   ├── train_model.py    # K-Means eğitim scripti
-│   ├── predict.py        # Model yükleme + tahmin + öneri motoru
-│   └── models/           # Eğitilmiş model dosyası
-├── frontend/              # React + Vite dashboard
-└── docs/                  # Mimari notlar, tasarım kararları
+│   ├── features.py         # Özellik çıkarımı
+│   ├── predict.py          # Tahmin + öneri
+│   └── train_model.py      # Model eğitimi
+└── config.py               # Merkezi yapılandırma
+
+ros2_bridge/                # ROS 2 ament_python paketi
+├── ros2_bridge/
+│   └── battery_bridge_node.py
+├── launch/
+├── config/
+└── package.xml
+
+frontend/                   # React (Vite) dashboard
+tests/                      # pytest test paketi (33 test)
 ```
 
 ## Kurulum
 
+**Gereksinimler:** Python ≥ 3.10, Docker, Node.js 18+ (frontend için)
+
+### Tek komutla (Docker Compose)
+
 ```bash
 git clone https://github.com/ibrahimtariksolak/battery-health-platform.git
 cd battery-health-platform
-
-# 1) Veritabanını ayağa kaldır
-docker compose up -d db
-
-# 2) Python sanal ortamı ve bağımlılıklar
-python -m venv .venv
-.venv\Scripts\activate          # Windows
-pip install -r requirements.txt
-
-# 3) Şemayı veritabanına uygula
-Get-Content backend\app\db\schema.sql | docker exec -i battery-db psql -U battery_admin -d battery_health
-
-# 4) ML modelini eğit (bir kereye mahsus)
-cd ml
-python train_model.py
-cd ..
-
-# 5) Backend'i başlat
-uvicorn backend.app.main:app --reload
-
-# 6) Frontend'i başlat (yeni bir terminalde)
-cd frontend
-npm install
-npm run dev
+cp .env.example .env    # gerekirse şifreleri düzenle
+docker compose up -d
 ```
 
-Dashboard: `http://localhost:5173`
-API dokümantasyonu (Swagger): `http://127.0.0.1:8000/docs`
+- Dashboard: `http://localhost:3000`
+- API / Swagger: `http://localhost:8000/docs`
 
-## Neden Bu Teknolojik Kararlar?
+### Yerel geliştirme
 
-**Neden TimescaleDB, düz PostgreSQL değil?**
-Batarya telemetrisi doğası gereği zaman serisi verisidir — sürekli artan, zaman damgasıyla sorgulanan, eski verinin nadiren güncellendiği bir yapı. TimescaleDB, tabloyu otomatik olarak zaman bazlı parçalara (chunk) böler (`create_hypertable`), bu da zaman aralığı sorgularını standart PostgreSQL'e göre belirgin şekilde hızlandırır. Aynı zamanda standart SQL ile sorgulanabildiği için (InfluxDB gibi ayrı bir sorgu dili öğrenmeye gerek kalmadan) geliştirme hızını korur.
+```bash
+# 1) Veritabanı
+docker compose up -d db
 
-**Neden K-Means, DBSCAN değil?**
-Sürüş stili sayısının önceden bilindiği (Eko/Normal/Agresif — üç sabit kategori) bir problemde K-Means, k parametresini elle belirleyebildiğimiz için daha kontrollü ve yorumlanabilir sonuçlar veriyor. DBSCAN, k'yı önceden bilmediğimiz senaryolarda daha uygun olurdu. Bu projede k=3 seçimi, silhouette skoru analiziyle de doğrulanmıştır (bkz. `ml/train_model.py` çıktısı: k=3 için 0.93, en yakın diğer k değerlerinden belirgin şekilde yüksek).
+# 2) Python
+python -m venv .venv
+source .venv/bin/activate          # Linux/macOS
+# .venv\Scripts\activate           # Windows
+pip install -e ".[dev]"
 
-**Neden WebSocket, polling değil?**
-Dashboard'un saniyede bir güncellenen bir veri akışını göstermesi gerekiyor. Polling (istemcinin her saniye "yeni veri var mı?" diye sorması) hem gereksiz HTTP overhead'i yaratır hem de gerçek gecikmeyi (veri üretilme anı ile gösterilme anı arasındaki fark) artırır. WebSocket, sunucunun veri üretilir üretilmez istemciye anında göndermesini sağlıyor — tek bağlantı üzerinden çift yönlü, düşük gecikmeli iletişim.
+# 3) Şemayı uygula (ilk seferde)
+cat battery_platform/db/sql/schema.sql | docker exec -i battery-db psql -U battery_admin -d battery_health
+cat battery_platform/db/sql/migration_faz5.sql | docker exec -i battery-db psql -U battery_admin -d battery_health
 
-## Donanım Entegrasyon Planı (gerçek sensörlere geçiş için)
+# 4) ML modelini eğit (bir kereye mahsus)
+python -m battery_platform.ml.train_model
 
-Şu an sistem tamamen yazılım tabanlı simülasyonla çalışıyor. Gerçek donanıma bağlanmak istenirse:
-- **Akım/voltaj sensörü:** ACS712 (akım) + basit bir voltaj bölücü devresi, bir ESP32'ye I2C/ADC üzerinden bağlanır
-- **Sıcaklık sensörü:** NTC termistör veya DS18B20 (dijital, daha hassas)
-- **Veri aktarımı:** ESP32 üzerinde çalışan basit bir firmware, okunan değerleri `POST /telemetry` endpoint'ine periyodik olarak gönderir — böylece backend ve üzeri tüm katman (BMS mantığı, ML, dashboard) hiçbir değişiklik gerektirmeden gerçek veriyle çalışmaya devam eder.
+# 5) Backend
+uvicorn battery_platform.api.app:app --reload
 
-## Sonuçlar / Doğrulama
+# 6) Frontend (yeni terminal)
+cd frontend && npm install && npm run dev
+```
 
-- **Fizik motoru:** Eko/Normal/Agresif sürüş senaryolarında SoC düşüşü ve sıcaklık artışı beklenen sırayla ve gerçekçi aralıklarda (Eko ~26°C, Normal ~28.5°C, Agresif ~40°C tepe sıcaklık) doğrulanmıştır.
-- **Termal koruma:** Histerezisli state machine, eşik civarında salınım (flapping) yapmadan durum geçişi yapıyor; sensör veri kaybında fail-safe (SHUTDOWN) davranışı doğrulanmıştır.
-- **K-Means modeli:** 120 sentetik oturumla eğitildi, k=3 için silhouette skoru 0.93, küme-etiket uyum oranı (purity) %100. Eğitim setinde hiç bulunmayan test senaryolarında da 3/3 doğru sınıflandırma yapmıştır.
+### ROS 2 köprüsü (opsiyonel)
+
+```bash
+source /opt/ros/humble/setup.bash
+cd ros2_bridge
+colcon build --packages-select battery_ros2_bridge
+source install/setup.bash
+ros2 launch battery_ros2_bridge bridge.launch.py
+```
+
+Yayınlanan topic'ler:
+- `/battery_state` (`sensor_msgs/BatteryState`)
+- `/diagnostics` (`diagnostic_msgs/DiagnosticArray`)
+
+## Testler
+
+```bash
+pip install -e ".[dev]"
+pytest tests/ -v          # 33 test
+ruff check battery_platform/ tests/
+```
+
+CI, her push ve PR'da Python 3.10, 3.11, 3.12 üzerinde otomatik çalışır.
+
+## API Endpoint'leri
+
+| Yol | Yöntem | Açıklama |
+|---|---|---|
+| `/healthz` | GET | Sağlık kontrolü |
+| `/telemetry/latest` | GET | Son pack okuması |
+| `/telemetry/history` | GET | Geçmiş okumalar |
+| `/bms/status` | GET | BMS durumu + hücre detayı |
+| `/ml/driving-style` | GET | Sürüş karakteri analizi |
+| `/sim/state` | GET | Simülasyon durumu |
+| `/sim/fault` | POST | Arıza enjekte et |
+| `/sim/fault` | DELETE | Arızaları temizle |
+| `/sim/profile` | POST | Sürüş profilini değiştir |
+| `/sim/reset-thermal` | POST | SHUTDOWN'dan çık |
+| `/events/` | GET | Olay kayıtları |
+| `/ws/telemetry` | WS | Canlı veri akışı |
+
+## Bilinen Sınırlamalar
+
+- K-Means doğrulaması daireseldir: model, simülatörün kendi profil üreticisinden çıkan veriyle eğitilip yine aynı üreticiyle test ediliyor. Silhouette 0.93 ve %100 purity, modelin değil problemin trivial olduğunu gösterir. Gerçek bir değerlendirme için bağımsız veri kaynağı gerekir.
+- Hücreler arası termal etkileşim modellenmiyor (her hücrenin sıcaklığı bağımsız).
+- SoC tahmini saf coulomb counting'e dayanıyor; EKF/UKF tabanlı kestirim gelecek çalışma.
+- Frontend henüz arıza enjeksiyonu butonlarını içermiyor — API üzerinden `curl` ile kullanılır.
 
 ## Lisans
 
-Bu proje bir portfolyo/öğrenme projesidir. MIT lisansı altında paylaşılmıştır.
+MIT
