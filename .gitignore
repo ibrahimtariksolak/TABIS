@@ -15,9 +15,6 @@ npm-debug.log*
 # Veritabanı / veri dosyaları
 *.sqlite3
 db_data/
-thermal-cv/data/*.png
-thermal-cv/data/*.jpg
-!thermal-cv/data/.gitkeep
 
 # IDE
 .vscode/
@@ -30,3 +27,17 @@ Thumbs.db
 
 # Loglar
 *.log
+
+# Test / lint
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# ROS 2 / colcon build
+build/
+install/
+log/
+ros2_bridge/build/
+ros2_bridge/install/
+ros2_bridge/log/

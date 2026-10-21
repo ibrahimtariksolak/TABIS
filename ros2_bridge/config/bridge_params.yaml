@@ -1,0 +1,5 @@
+battery_bridge:
+  ros__parameters:
+    ws_url: "ws://127.0.0.1:8000/ws/telemetry"
+    low_soc_threshold: 0.2
+    critical_soc_threshold: 0.1

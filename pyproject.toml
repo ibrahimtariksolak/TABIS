@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "battery-health-platform"
+version = "0.3.0"
+description = "Batarya sağlığı izleme, hücre dengeleme ve öngörücü bakım platformu"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+    "pydantic>=2.7,<3.0",
+    "psycopg[binary,pool]>=3.1,<4.0",
+    "python-dotenv>=1.0",
+    "scikit-learn>=1.3,<2.0",
+    "numpy>=1.26,<3.0",
+    "joblib>=1.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+bhp-train = "battery_platform.ml.train_model:main"
+bhp-simulate = "battery_platform.scripts.offline_session:main"
+
+[tool.setuptools.packages.find]
+include = ["battery_platform*"]
+
+[tool.setuptools.package-data]
+"battery_platform.db" = ["sql/*.sql"]
+"battery_platform.ml" = ["models/*.pkl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["error::DeprecationWarning:battery_platform.*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]

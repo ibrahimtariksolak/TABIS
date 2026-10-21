@@ -4,13 +4,17 @@ services:
     container_name: battery-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: battery_admin
-      POSTGRES_PASSWORD: change_me_in_env_file
-      POSTGRES_DB: battery_health
+      POSTGRES_USER: ${POSTGRES_USER:-battery_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-battery_health}
     ports:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
+      - ./battery_platform/db/sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./battery_platform/db/sql/migration_faz3.sql:/docker-entrypoint-initdb.d/02-faz3.sql:ro
+      - ./battery_platform/db/sql/migration_faz4.sql:/docker-entrypoint-initdb.d/03-faz4.sql:ro
+      - ./battery_platform/db/sql/migration_faz5.sql:/docker-entrypoint-initdb.d/04-faz5.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U battery_admin -d battery_health"]
       interval: 5s
@@ -19,29 +23,28 @@ services:
 
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: battery-backend
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://battery_admin:change_me_in_env_file@db:5432/battery_health
+      DATABASE_URL: postgresql://${POSTGRES_USER:-battery_admin}:${POSTGRES_PASSWORD:-change_me}@db:5432/${POSTGRES_DB:-battery_health}
     ports:
       - "8000:8000"
-    volumes:
-      - ./backend:/app
-    # Faz 1-2'de Dockerfile ve app kodu eklendiğinde aktif olacak
 
-  # Faz 5'te eklenecek:
-  # frontend:
-  #   build:
-  #     context: ./frontend
-  #   ports:
-  #     - "3000:3000"
-  #   depends_on:
-  #     - backend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: battery-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
 
 volumes:
   db_data:
